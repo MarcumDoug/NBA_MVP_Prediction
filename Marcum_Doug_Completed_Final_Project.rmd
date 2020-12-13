@@ -1,0 +1,298 @@
+---
+title: "Final Project - NBA MVP Predictions"
+author: "Doug Marcum"
+date: "02/26/2020"
+output:
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Introduction
+The National Basketball Association (NBA) is a professional basketball league in North America comprising 30 franchises, of which 29 are in the United States and one in Canada. The league has grown from its humble beginnings to a global enterprise generating in excess of $8 billion in annual revenue. A major component to the rise in popularity of the sport has been directly attributed to the aggressive player centric marketing initiative. Fans often discuss and debate the accolades of specific players with greater passion than they do for the franchises they represent. 
+
+The league does a tremendous job of staying ahead of the curve in terms of advanced analytics, but when deciding the most valuable player (MVP), they leave the decision to the opinions of 100 NBA selected media members. Additionally, the league does not provide any criteria in the selection or voting process. Without a defined criterion, the argument for MVP is debated year after year. The purpose of this project is to see if there is an unwritten criterion that is being followed, and once determined, can it be used to predict future MVPs.
+
+### Import Necessary Libraries
+```{r loading_packages, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(corrplot)
+library(car)
+library(caTools)
+library(lmtest)
+library(skimr)
+library(corpcor)
+```
+### Data
+The data sets used in this project are:  
+
+[Kaggle - Full NBA Seasonal Stats](https://www.kaggle.com/lancharro5/seasons-stats-50-19#Seasons_stats_complete.csv) - This data set contains all player statistics from 1950 – 2019. The season from 2010-2019 will be the focus. Additionally, offensive statistics are the concentration of the analysis.
+
+[MVP Totals 2010 - 2019](https://www.basketball-reference.com/awards/mvp.html#mvp_NBA::none) – List of all previous MVP award winners by season from basketball-reference.com.
+
+[2020 Season Stats](https://www.basketball-reference.com/leagues/NBA_2020_per_game.html) - Current season stats from basketball-reference.com.
+```{r}
+# load in csv files
+stats_all <- read.csv('Seasons_stats_complete.csv')
+mvp_votes <- read.csv('MVP_Voting_2010to2019.csv', header=TRUE)
+
+# quick inspection of loaded data 
+head(stats_all)
+head(mvp_votes)
+
+# correct header for mvp_votes
+names(mvp_votes) <- as.matrix(mvp_votes[1, ])
+mvp_votes <- mvp_votes[-1, ]
+mvp_votes[] <- lapply(mvp_votes, function(x) type.convert(as.character(x)))
+head(mvp_votes)
+```
+### Data Cleaning
+
+Begin filtering and cleaning the player stats data.
+```{r}
+# only include seasons equal to 2010 and later, since the project is focusing on the past ten (10) NBA seasons
+df_2010 <- stats_all %>% filter(Year >= 2010)
+
+# minimum of 39 games played is the threshold in the past ten (10) MVP voting years (Derek Rose, 39 Games, 11th  in MVP voting)
+df_2010 <- df_2010 %>% filter(G >= 39)
+
+# no mvp has played for more than one (1) team in a season, remove TOT team for players playing for more than one team over the course of one season (this also helps eliminate duplicate player entries in a specific season)
+df_2010 <- df_2010 %>% filter(Tm != 'TOT')
+
+# determine if any values are missing
+sum(is.na(df_2010))
+
+# no missing values found
+```
+A new data frame is created with selected variables for evaluation. This is done by narrowing the variables from 50 to 15.
+```{r}
+# Season = Season Year, Player = Player's Name, Team = Team, Games = Games Played
+# MinPG = Minutes Per Game, PtsPG = Points Per Game, RebPG = Total Rebounds Per Game
+# AstPG = Assists Per Game, StlPG = Steals Per Game, BlkPG = Blocks Per Game
+# FGPct = Field Goal Percentage, ThreePct = 3 Point Field Goal Percentage
+# PER = Player Efficiency Rating, WS = Player Win Share, VORP = Value Over Replacement Player
+
+clean_stats_df <- data.frame('Season' = as.character(df_2010$Year), 
+                       'Player' = df_2010$Player, 
+                       'Team' = df_2010$Tm, 
+                       'Games' = as.numeric(df_2010$G), 
+                       'MinPG' = round((df_2010$MP / df_2010$G), 1), 
+                       'PtsPG' = round((df_2010$PTS / df_2010$G), 1), 
+                       'RebPG' = round((df_2010$TRB / df_2010$G), 1), 
+                       'AstPG' = round((df_2010$AST / df_2010$G), 1),
+                       'StlPG' = round((df_2010$STL / df_2010$G), 1),
+                       'BlkPG' = round((df_2010$BLK / df_2010$G), 1), 
+                       'FGPct' = round((df_2010$FG.), 2), 
+                       'ThreePct' = round((df_2010$X3P.), 2),
+                       'PER' = round((df_2010$PER), 2),
+                       'WS' = df_2010$WS, 
+                       'VORP' = df_2010$VORP)
+
+head(clean_stats_df)
+```
+Data structures are evaluated, to see if there is anything odd with the new data frame.
+```{r}
+# check  to make certain structure is correct
+str(clean_stats_df)
+
+# Check on odd level team names. All are correct, once accounting for team name changes.
+sort(unique(clean_stats_df$Team))
+
+# Check on odd level player names. All are correct.
+which(clean_stats_df['Player'] == '0', arr.ind=TRUE)
+```
+Here the data is *skimmed* to take a overarching evaluation of it. No data is missing and the distributions are as expected for the subject matter.
+```{r}
+skim(clean_stats_df)
+```
+
+### Data Normalization
+
+Normalize the data
+```{r}
+minmax <- function(x) {(x-min(x))/ (max(x) - min(x))}
+
+clean_norm <- as.data.frame((lapply(clean_stats_df[4:15], minmax)))
+
+clean_norm <- data.frame('Season' = clean_stats_df$Season, 'Player' = clean_stats_df$Player, 'Team' = clean_stats_df$Team, clean_norm)
+
+head(clean_norm)
+```
+Now the MVP data is cleaned and a new data frame is created.
+```{r}
+# MVPRank = Player Final MVP Rank for the Season (1 = Winner)
+# MVPPts = Total Voting Points Received by Player
+clean_mvp_df <- data.frame('Season' = as.character(mvp_votes$Season),
+                           'Player' = mvp_votes$Player,
+                           'MVPRank' = mvp_votes$Rank,
+                           'MVPPts' = mvp_votes$`Pts Won`)
+head(clean_mvp_df)
+```
+The two data frames are merged and NA values are converted to zeros (0's).
+```{r}
+cleaned_df <- merge(clean_norm, clean_mvp_df, by=c('Season','Player'), all=TRUE, incomparables = NULL)
+
+# converting NAs for MVPRank and MVPPts for players not receiving votes
+cleaned_df[is.na(cleaned_df)] <- 0
+
+head(cleaned_df, 7)
+```
+### Correlations
+
+All correlations are plotted and list of correlations to MVPRank has been prepared. A number of interesting correlations present themselves in the data. With the focus on MVPRank, it is easy to see greater correlations with PtsPG, AstPG, PER, WS, and VORP. However, once examining all the correlations, it is discovered that the correlation between PtsPG and PER is approximately, .75, and would cause problems with collinearity with the data. Additionally, MinPG and PtsPG has a high correlation as well, .77, and it too would cause problems with collinearity with the data.
+```{r}
+cleaned_df_num <- select_if(cleaned_df, is.numeric)
+corrplot(cor(cleaned_df_num), method = 'square')
+
+MVPcorrelations <- cor(cleaned_df$MVPRank, cleaned_df_num)
+MVPcorrelations
+
+x <- cleaned_df[, 4:15]
+cor_chart <- cor2pcor(cov(x))
+cor_chart
+```
+
+To illustrate the example of correlation difference in categories having an impact on MVPRank, two scatter plots are shown below. The first is PtsPG and BlkPG, and the second is PtsPG and PER. MVPRank is in blue.
+```{r}
+plot(cleaned_df$PtsPG, cleaned_df$BlkPG)
+mvp_dot <- cleaned_df[which(cleaned_df$MVPRank > 0),]
+points(mvp_dot$PtsPG, mvp_dot$BlkPG,col="blue")
+
+plot(cleaned_df$PtsPG, cleaned_df$PER)
+mvp_dot <- cleaned_df[which(cleaned_df$MVPRank > 0),]
+points(mvp_dot$PtsPG, mvp_dot$PER,col="blue")
+```
+
+### Regression
+
+The linear regression model is built and processed.
+```{r}
+mod_1 <- lm(MVPRank ~ PtsPG + RebPG + AstPG + StlPG + WS + VORP, data=cleaned_df)
+summary(mod_1)
+```
+With an Adjusted R-squared of .1822 for mod_2, it accounts for approximately 18.2% of the variation in the MVP voting. Considering there are no requirements in the formatting for MVP voting, this is to be expected. Opinion is the factor that cannot be accounted for, but this model is hoping to understand. Additionally, when looking at the adjusted R2 for mod_1, we see that difference is small (approximately 0.02%). This shrinkage means that if the model were derived from the population rather than a sample it would account for approximately 0.02% less variance in the outcome.  
+  
+### Confidence Intervals
+
+None of the confidence intervals cross zero (0), thus it can be assumed the predictors are related to the outcome. The confidence intervals all seem to be small, which indicates a good model.
+```{r}
+confint(mod_1)
+```
+### Durbin Watson (DW) Statistic
+
+The value is 2.015, which is so close to 2 that the assumption of independence has certainly been met. The p-value of .66 confirms this conclusion (it is larger than .05 and, therefore, not significant).
+```{r}
+durbinWatsonTest(mod_1)
+```
+### Multicollinearity
+
+All of the VIF values are below 10, the statistical tolerances are above 0.1, and the average VIF is below 5. Based on these measures we can conclude that there may be moderate collinearity within our data.
+```{r}
+vif(mod_1)
+1/(vif(mod_1))
+mean(vif(mod_1))
+```
+### Creating and Testing the Prediction
+
+Now the creation of the prediction function. This will create a new data frame, loop through the season, and return the MVP prediction for each season.
+```{r}
+MVPprediction <- function(data, model){
+  pred <- predict(model, newdata = data, level = 0.90, type = "response")
+  mvp <- data[0,]
+  for (season in levels(data$Season)){
+    data_temp <- data[which(data$Season==season),]
+    pred_temp <- pred[which(data$Season==season)]
+    mvp_temp <- data_temp[which(pred_temp==max(pred_temp)),]
+    mvp <- data.frame(rbind(as.matrix(mvp), as.matrix(mvp_temp)))
+  }
+  return(mvp)
+}
+
+MVPprediction(cleaned_df, mod_1)
+```
+From the final data set of approximately 280 players per season, the model was able to correctly select the league MVP 70% of the time. Beyond that, the incorrect selections were for players that were selected either second or third in the MVP voting. 
+
+Since several assumptions and modifications have been made along the way, it is necessary to break the data into test and train sets. This cross validation will help ensure that the model is not over-fitting. From this test, the accuracy of the model remains high at approximately 72%.
+```{r}
+# set random seed
+set.seed(56)
+
+# split the data, set up train and test subsets (90/10 split)
+split <- sample.split(cleaned_df, SplitRatio = 0.9)
+train <- subset(cleaned_df, split == 'TRUE')
+test <- subset(cleaned_df, split == 'FALSE')
+
+# test the data through the model
+res <- predict(mod_1, train, type='response')
+
+# create confusion matrix to validate and determine accuracy
+cmatrix <- table(Actuals_Value=train$MVPRank, Predicted_Value = res > 0.5)
+((cmatrix[[1,1]] + cmatrix[[2,2]]) / sum(cmatrix)*100)
+```
+### Introducing the Current Season
+
+With an accurate model built, the data from the current 2019-2020 season can be loaded, cleaned, and tested to make a future prediction.
+```{r}
+# load in 2020 season statistics to date (accurate to Feb 26 2020)
+stats_2020 <- read.csv('Season_2020_Stats.csv')
+
+# no mvp has played for more than one (1) team in a season, remove TOT team for players playing for more than one team over the course of one season (this also helps eliminate duplicate player entries in a specific season)
+df_2020 <- stats_2020 %>% filter(Tm != 'TOT')
+
+# minimum of 39 games played is the threshold in the past ten (10) MVP voting years 
+df_2020 <- df_2020 %>% filter(G >= 39)
+
+# clean and structure in the same manner/format as previous dataframe (seasons)
+clean_2020 <- data.frame('Season' = as.character(df_2020$Year), 
+                       'Player' = df_2020$Player, 
+                       'Team' = df_2020$Tm, 
+                       'Games' = as.numeric(df_2020$G), 
+                       'MinPG' = round((df_2020$MP / df_2020$G), 1), 
+                       'PtsPG' = round((df_2020$PTS / df_2020$G), 1), 
+                       'RebPG' = round((df_2020$TRB / df_2020$G), 1), 
+                       'AstPG' = round((df_2020$AST / df_2020$G), 1),
+                       'StlPG' = round((df_2020$STL / df_2020$G), 1),
+                       'BlkPG' = round((df_2020$BLK / df_2020$G), 1), 
+                       'FGPct' = round((df_2020$FG.), 2), 
+                       'ThreePct' = round((df_2020$X3P.), 2), 
+                       'PER' = round((df_2020$PER), 2),
+                       'WS' = df_2020$WS, 
+                       'VORP' = df_2020$VORP)
+
+# a small number of players have not attempted a 3 point shot this season (10). Replaced NA with 0 values. 
+clean_2020[is.na(clean_2020)] = 0
+
+# normalize data
+clean_2020_norm <- as.data.frame((lapply(clean_2020[4:15], minmax)))
+
+# construct new dataframe
+clean_2020_norm <- data.frame('Season' = clean_2020$Season, 'Player' = clean_2020$Player, 'Team' = clean_2020$Team, clean_2020_norm)
+```
+### 2020 NBA MVP Prediction
+```{r}
+# run 2020 season MVP prediction
+MVPprediction(clean_2020_norm, mod_1)
+```
+### Conclusion
+
+From the beginning of the project, the only method available to attack the problem was from a direct statistical approach. With much of the sports world filled with hyperbole, when no criteria are given in determining a most valuable player, opinions can be tainted by hometown pride, disdain toward a player, or even voter fatigue. During Michael Jordan's era, he was arguably the most valuable player each season. However, fans and media grew tired of being dominated by the same name and face. Thus, Charles Barkley and Karl Malone were awarded with an MVP trophy each. Much of the same has been talked about during LeBron James time. 
+
+Knowing that opinions and attitudes play major factors, it was critical to understand what variables weigh heaviest in voters' minds. Through minor trial and error, the model was able to predict with a high accuracy the annual MVP. Even for the seasons in which the model's prediction was incorrect, those are possible seasons where opinion outweighed the statistics. 
+
+2011 - The model predicted LeBron James (third in the actual vote). However, this was the season of his public announcement to leave the Cleveland Cavaliers and 'take his talents' to South Beach. That season, LeBron without doing anything other than switching teams, went from hero to villain in many minds. Derek Rose was the winner that season, and the 'hometown hero' played large for him nationally and in Chicago. His style of play and being undersized, gave him the improbable vote over LeBron.  
+
+2015 - The model predicted James Harden (second in the actual vote). While Harden was a fine selection, the nation was enamored with the way Steph Curry was dominating. Voter sentiment could be argued to have been the deciding factor over pure statistics. 
+
+2019 - The model predicted James Harden (second in actual vote). Again, Harden had a tremendous season, but a major topic over the course of the season was centered around the style of play in Houston. Many writers argued that Harden and the Rockets were altered the pace and style of the game and not for the better. The winner, Giannis Antetokounmpo, had an outstanding season by leading the Milwaukee Bucks to the number one seed in the Eastern Conference. While I cannot pin this outcome on opinions more than statistics, it was a factor to some degree. 
+
+While the project could be seen as a success, there are still limitations and areas where it could be built upon.
+
+1. Social Media - With social media playing a substantial role in our daily lives, it could be presumed to have an influence on how  voters might view a player. Whether that be the player's direct social media account or the numerous postings by fans and media, the number of impressions per player in comparison to voting patterns could be telling.
+
+2. Advanced Metrics/Analytics - While the project touched on two advanced statistics (PER and VORP), the league has fully embraced several additional measures. For purposes of this project, the advanced metrics were kept to a minimum in part due to the unfavorable opinion many veteran analysts and media members have toward their validity. I believe they are not currently being influenced by those numbers, but they could provide additional insight in the coming seasons.
+
+3. Voting Records - Voting was considered as a collective entity itself, instead of individual voters. If access to each voters’ previous ballots were made available, then great trends could potentially be extrapolated. 
+
+Overall, the project does assist in helping to define a structure as to how voters look at a player’s body of work when voting for MVP. With the model predicting James Harden as the possible 2020 MVP, it could be argued that he is having a better statistical season than he did during his MVP season of 2018. Just like the voters though, my own opinions run deep, and I see Giannis Antetokounmpo repeating as MVP. Now we wait and see.
