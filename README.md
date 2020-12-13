@@ -1,4 +1,5 @@
 # NBA MVP Prediction
+Term Project for DSC 520
 
 ## Introduction
 The National Basketball Association (NBA) is a professional basketball league in North America comprising 30 franchises, of which 29 are in the United States and one in Canada. The league has grown from its humble beginnings to a global enterprise generating in excess of $8 billion in annual revenue. A major component to the rise in popularity of the sport has been directly attributed to the aggressive player centric marketing initiative. Fans often discuss and debate the accolades of specific players with greater passion than they do for the franchises they represent. 
